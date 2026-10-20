@@ -5,7 +5,7 @@ from normalize import normalize_keywords, normalize_topic, singularize
 
 @pytest.mark.parametrize("word, expected", [
     ("floods", "flood"), ("countries", "country"), ("news", "news"), ("crisis", "crisis"),
-    ("glass", "glass"), ("virus", "virus"), ("gas", "gas"), ("bees", "bee"),
+    ("glass", "glass"), ("virus", "virus"), ("gas", "gas"), ("bees", "bee"), ("measles", "measles"),
 ])
 def test_singularize(word, expected):
     assert singularize(word) == expected
@@ -13,6 +13,12 @@ def test_singularize(word, expected):
 
 def test_normalize_topic_canonicalises():
     assert normalize_topic("  Monsoon   FLOODS ") == "monsoon flood"
+
+
+def test_edge_filler_is_trimmed():
+    assert normalize_topic("til museum") == "museum"
+    assert normalize_topic("new vaccine") == "vaccine"
+    assert normalize_topic("2024 election") == "election"
 
 
 @pytest.mark.parametrize("phrase", ["til", "new", "2024", "til 2024", "  ", "ab"])

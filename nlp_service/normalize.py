@@ -17,7 +17,8 @@ TOPIC_STOPLIST = {
 
 # Words where a trailing "s" is not a plural.
 SINGULAR_EXCEPTIONS = {"news", "series", "species", "physics", "mathematics", "politics", "economics",
-                       "covid", "bus", "gas", "chaos", "lens", "bias", "thesis", "crisis", "analysis"}
+                       "covid", "bus", "gas", "chaos", "lens", "bias", "thesis", "crisis", "analysis",
+                       "measles", "diabetes", "mumps", "rabies", "herpes", "isis", "texas", "paris", "athens"}
 
 _WS = re.compile(r"\s+")
 _DIGITS = re.compile(r"^\d+$")
@@ -37,7 +38,12 @@ def normalize_topic(phrase: str) -> str | None:
     """Return the canonical topic, or None if the phrase is noise."""
     tokens = _WS.sub(" ", phrase.strip().lower()).split(" ")
     tokens = [singularize(t) for t in tokens if t]
-    if not tokens or all(t in TOPIC_STOPLIST or _DIGITS.match(t) for t in tokens):
+    # Trim filler at the edges: "til museum" -> "museum", "new vaccine" -> "vaccine".
+    while tokens and (tokens[0] in TOPIC_STOPLIST or _DIGITS.match(tokens[0])):
+        tokens.pop(0)
+    while tokens and (tokens[-1] in TOPIC_STOPLIST or _DIGITS.match(tokens[-1])):
+        tokens.pop()
+    if not tokens:
         return None
     topic = " ".join(tokens)
     return topic if len(topic) >= 3 else None

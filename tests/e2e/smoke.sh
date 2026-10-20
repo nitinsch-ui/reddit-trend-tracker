@@ -16,8 +16,8 @@ until [ "$(sql 'SELECT COUNT(*) FROM topic_trends' 2>/dev/null || echo 0)" -gt 0
 done
 
 echo "== topic_trends rows: $(sql 'SELECT COUNT(*) FROM topic_trends')"
-echo "== top topics"
-sql "SELECT topic, subreddit, ROUND(MAX(trend_score)::numeric, 2), SUM(post_count) FROM topic_trends GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 10"
+echo "== top trending topics"
+sql "SELECT topic, subreddit, ROUND(MAX(trend_score)::numeric, 2), SUM(post_count) FROM topic_trends WHERE is_trending GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 10"
 echo "== data-quality checks (latest per check)"
 sql "SELECT DISTINCT ON (layer, check_name) layer, check_name, status FROM dq_results ORDER BY layer, check_name, checked_at DESC"
 echo "== dead letters"
