@@ -1,0 +1,273 @@
+# Reddit Trend Tracker - full local stack (10 services; kafka-ui is optional: `make tools`).
+#
+# Memory limits are sized so the whole stack fits in a ~5 GB Docker Desktop VM
+# (an 8 GB Mac). Raise them if you give Docker more memory.
+
+x-pipeline-env: &pipeline-env
+  TZ: UTC
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  KAFKA_RAW_TOPIC: reddit.raw.posts
+  KAFKA_PROCESSED_TOPIC: reddit.processed.posts
+  KAFKA_DLQ_TOPIC: reddit.dead.letter
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: ${POSTGRES_DB:-trends}
+  POSTGRES_USER: ${POSTGRES_USER:-trends}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trends}
+
+x-spark-env: &spark-env
+  <<: *pipeline-env
+  S3_ENDPOINT: http://s3:8333
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:-lakeadmin}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:-lakeadmin-secret}
+  LAKE_BUCKET: reddit-lake
+  LAKE_ROOT: ${LAKE_ROOT:-s3a://reddit-lake}
+  CHECKPOINT_ROOT: /checkpoints
+
+services:
+  kafka:
+    image: apache/kafka:3.7.0
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk  # any base64-encoded UUID
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_HEAP_OPTS: -Xms384m -Xmx384m
+    ports:
+      - "29092:29092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      # A TCP probe, not a Kafka CLI tool: the CLI would start a second JVM with the
+      # broker's heap settings inside this container's memory limit. kafka-init
+      # waits for the broker to actually answer before creating topics.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9092"]
+      interval: 15s
+      timeout: 15s
+      retries: 10
+      start_period: 20s
+    mem_limit: 768m
+    restart: unless-stopped
+
+  kafka-init:
+    image: apache/kafka:3.7.0
+    entrypoint: ["/bin/bash", "/scripts/create_topics.sh"]
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    volumes:
+      - ./kafka-setup:/scripts:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
+    mem_limit: 384m
+    restart: "no"
+
+  # S3-compatible object store for the Delta lake (stands in for AWS S3).
+  s3:
+    image: chrislusf/seaweedfs:3.97
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        cat > /tmp/s3.json <<EOF
+        {"identities": [{"name": "lake",
+          "credentials": [{"accessKey": "$${S3_ACCESS_KEY}", "secretKey": "$${S3_SECRET_KEY}"}],
+          "actions": ["Admin", "Read", "List", "Tagging", "Write"]}]}
+        EOF
+        exec weed server -dir=/data -s3 -s3.port=8333 -s3.config=/tmp/s3.json \
+          -master.volumeSizeLimitMB=256 -volume.max=100
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-lakeadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-lakeadmin-secret}
+    ports:
+      - "8333:8333"
+    volumes:
+      - s3-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9333/cluster/status || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    mem_limit: 256m
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-trends}
+      POSTGRES_USER: ${POSTGRES_USER:-trends}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trends}
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:-grafana}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    mem_limit: 256m
+    restart: unless-stopped
+
+  nlp-service:
+    build: ./nlp_service
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      NLP_MIN_SCORE: ${NLP_MIN_SCORE:-0.15}
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    mem_limit: 1200m
+    restart: unless-stopped
+
+  producer:
+    build: ./producer
+    environment:
+      <<: *pipeline-env
+      PRODUCER_MODE: ${PRODUCER_MODE:-synthetic}
+      SUBREDDITS: worldnews,todayilearned
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-60}
+      SYNTHETIC_POSTS_PER_MINUTE: ${SYNTHETIC_POSTS_PER_MINUTE:-20}
+      REPLAY_PATH: /data/${REPLAY_FILE:-sample_posts.jsonl}
+      CAPTURE_PATH: ${CAPTURE_PATH:-}
+      REDDIT_CLIENT_ID: ${REDDIT_CLIENT_ID:-}
+      REDDIT_CLIENT_SECRET: ${REDDIT_CLIENT_SECRET:-}
+      REDDIT_USER_AGENT: ${REDDIT_USER_AGENT:-script:reddit-trend-tracker:v1.0}
+    volumes:
+      - ./data:/data
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    mem_limit: 192m
+    restart: on-failure
+
+  spark-job1:
+    build: ./spark
+    command: >
+      /opt/spark/bin/spark-submit --master local[2]
+      --driver-memory ${JOB1_DRIVER_MEMORY:-768m}
+      /app/job1_ingest.py
+    environment:
+      <<: *spark-env
+      NLP_SERVICE_URL: http://nlp-service:8000/extract-topics
+      JOB1_TRIGGER: 30 seconds
+      JOB1_MAX_OFFSETS_PER_TRIGGER: "500"
+      DEDUP_WATERMARK: 10 minutes
+    ports:
+      - "4040:4040"
+    volumes:
+      - checkpoints:/checkpoints
+      - lake:/lake
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      s3:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      nlp-service:
+        condition: service_healthy
+    mem_limit: 1400m
+    restart: on-failure
+
+  spark-job2:
+    build: ./spark
+    command: >
+      /opt/spark/bin/spark-submit --master local[2]
+      --driver-memory ${JOB2_DRIVER_MEMORY:-640m}
+      /app/job2_trend.py
+    environment:
+      <<: *spark-env
+      TREND_WINDOW_MINUTES: "5"
+      TREND_WATERMARK: 10 minutes
+      TREND_MIN_POSTS: ${TREND_MIN_POSTS:-2}
+      TREND_THRESHOLD: ${TREND_THRESHOLD:-1.0}
+      JOB2_TRIGGER: 1 minute
+    ports:
+      - "4041:4040"
+    volumes:
+      - checkpoints:/checkpoints
+      - lake:/lake
+    depends_on:
+      s3:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      spark-job1:
+        condition: service_started
+    mem_limit: 1200m
+    restart: on-failure
+
+  dq-scheduler:
+    build: ./dq
+    environment:
+      <<: *pipeline-env
+      DQ_INTERVAL_SECONDS: ${DQ_INTERVAL_SECONDS:-300}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 128m
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.2.3
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/reddit_trends.json
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      POSTGRES_DB: ${POSTGRES_DB:-trends}
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:-grafana}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 256m
+    restart: unless-stopped
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    profiles: ["tools"]
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    ports:
+      - "8080:8080"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    mem_limit: 384m
+
+volumes:
+  kafka-data:
+  s3-data:
+  pg-data:
+  checkpoints:
+  lake:
+  grafana-data:

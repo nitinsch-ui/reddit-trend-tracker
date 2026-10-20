@@ -1,0 +1,122 @@
+# Four pipeline-health alerts. They appear under Alerting > Alert rules; add a
+# contact point (email, Slack, ...) in the UI to get notified.
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: pipeline-health
+    folder: Reddit Trends
+    interval: 1m
+    rules:
+      - uid: trend-freshness
+        title: Trend scores are stale (no write in 10 min)
+        condition: B
+        for: 0m
+        noDataState: Alerting
+        execErrState: Error
+        annotations:
+          summary: Spark Job 2 has not written to topic_trends for over 10 minutes. Check `make logs s=spark-job2`.
+        labels: {severity: critical}
+        data:
+          - refId: A
+            datasourceUid: postgres-ds
+            relativeTimeRange: {from: 600, to: 0}
+            model:
+              refId: A
+              format: table
+              rawQuery: true
+              editorMode: code
+              rawSql: SELECT COALESCE(EXTRACT(EPOCH FROM NOW() - MAX(computed_at)) / 60.0, 9999) AS minutes_since_write FROM topic_trends
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [10]}
+
+      - uid: dlq-spike
+        title: Dead-letter spike (>10 in 1h)
+        condition: B
+        for: 0m
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: More than 10 messages hit reddit.dead.letter in the last hour. Group dead_letter_events by error_reason.
+        labels: {severity: warning}
+        data:
+          - refId: A
+            datasourceUid: postgres-ds
+            relativeTimeRange: {from: 3600, to: 0}
+            model:
+              refId: A
+              format: table
+              rawQuery: true
+              editorMode: code
+              rawSql: SELECT COUNT(*)::float AS dead_letters FROM dead_letter_events WHERE received_at >= NOW() - INTERVAL '1 hour'
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [10]}
+
+      - uid: no-trending-topics
+        title: No trending topics for 30 min
+        condition: B
+        for: 0m
+        noDataState: Alerting
+        execErrState: Error
+        annotations:
+          summary: Nothing has crossed TREND_THRESHOLD for 30 minutes - the pipeline may be stalled, or the threshold is too high for current activity.
+        labels: {severity: warning}
+        data:
+          - refId: A
+            datasourceUid: postgres-ds
+            relativeTimeRange: {from: 1800, to: 0}
+            model:
+              refId: A
+              format: table
+              rawQuery: true
+              editorMode: code
+              rawSql: SELECT COUNT(DISTINCT topic)::float AS trending FROM topic_trends WHERE is_trending AND window_start >= NOW() - INTERVAL '30 minutes'
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: lt, params: [1]}
+
+      - uid: kafka-consumer-lag
+        title: Kafka consumer lag >1000 for 5 min
+        condition: B
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        annotations:
+          summary: The nlp_enrich query is falling behind reddit.raw.posts. Usually the NLP service is slow - check its logs and CPU.
+        labels: {severity: warning}
+        data:
+          - refId: A
+            datasourceUid: postgres-ds
+            relativeTimeRange: {from: 600, to: 0}
+            model:
+              refId: A
+              format: table
+              rawQuery: true
+              editorMode: code
+              rawSql: >-
+                SELECT COALESCE(MAX(max_offsets_behind_latest), 0)::float AS lag FROM pipeline_metrics
+                WHERE query_name = 'nlp_enrich' AND batch_timestamp >= NOW() - INTERVAL '2 minutes'
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [1000]}

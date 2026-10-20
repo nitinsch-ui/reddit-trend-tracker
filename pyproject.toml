@@ -1,0 +1,22 @@
+[project]
+name = "reddit-trend-tracker"
+version = "1.0.0"
+description = "Real-time Reddit trend detection: Kafka, Spark Structured Streaming, KeyBERT, Delta Lake, PostgreSQL, Grafana"
+requires-python = ">=3.8"
+
+[tool.pytest.ini_options]
+pythonpath = ["producer", "nlp_service", "spark", "dq"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "BLE"]
+ignore = ["UP006", "UP007", "UP035"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["common", "dq_checks", "nlp_client", "scoring", "text_clean", "job1_ingest", "job2_trend",
+                     "validator", "message", "sources", "dq_writer", "producer", "normalize", "extractor", "app",
+                     "run_scheduled"]

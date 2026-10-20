@@ -1,0 +1,10 @@
+# torch is installed separately from the CPU-only index (see Dockerfile).
+fastapi==0.115.0
+uvicorn==0.30.6
+pydantic==2.8.2
+keybert==0.8.5
+sentence-transformers==3.0.1
+transformers==4.44.2
+huggingface-hub==0.24.6
+scikit-learn==1.5.1
+numpy==1.26.4

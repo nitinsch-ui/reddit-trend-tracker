@@ -1,0 +1,4 @@
+# Driver-side dependencies (the image runs Python 3.8, so pins are 3.8-compatible).
+requests==2.32.3
+psycopg2-binary==2.9.9
+boto3==1.34.162
