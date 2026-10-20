@@ -100,13 +100,24 @@ def upsert_trends(batch_df: DataFrame, batch_id: int) -> None:
     ], batch_id)
 
 
-def wait_for_table(spark: SparkSession, path: str, poll_seconds: int = 15) -> None:
-    """Job 1 creates the processed table on its first batch."""
-    from delta.tables import DeltaTable
+def _has_commit(spark: SparkSession, path: str) -> bool:
+    jvm = spark.sparkContext._jvm
+    log_dir = jvm.org.apache.hadoop.fs.Path(f"{path}/_delta_log")
+    fs = log_dir.getFileSystem(spark.sparkContext._jsc.hadoopConfiguration())
+    return fs.exists(log_dir) and any(s.getPath().getName().endswith(".json") for s in fs.listStatus(log_dir))
 
-    while not DeltaTable.isDeltaTable(spark, path):
+
+def wait_for_table(spark: SparkSession, path: str, poll_seconds: int = 15) -> None:
+    """Job 1 creates the processed table on its first batch.
+
+    This checks the commit files directly, not DeltaTable.isDeltaTable(): that
+    caches the DeltaLog for the path, including its empty "does not exist"
+    snapshot, so polling it never sees the table appear.
+    """
+    while not _has_commit(spark, path):
         log.info("waiting for Delta table %s", path)
         time.sleep(poll_seconds)
+    spark.sparkContext._jvm.org.apache.spark.sql.delta.DeltaLog.clearCache()
 
 
 def main() -> None:
