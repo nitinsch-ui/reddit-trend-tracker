@@ -94,10 +94,31 @@ def build_spark(app_name: str) -> SparkSession:
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config("spark.hadoop.fs.s3a.aws.credentials.provider",
                 "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
+        # Fail fast on a stalled object store instead of Hadoop's defaults (200 s
+        # socket timeout x 20 attempts), which can freeze every query for an hour
+        # because local[2] has only two task slots to block.
+        .config("spark.hadoop.fs.s3a.connection.establish.timeout", "5000")
+        .config("spark.hadoop.fs.s3a.connection.timeout", "30000")
+        .config("spark.hadoop.fs.s3a.attempts.maximum", "3")
+        .config("spark.hadoop.fs.s3a.retry.limit", "5")
+        .config("spark.hadoop.fs.s3a.retry.interval", "1s")
         # Streaming state is tiny; 200 default shuffle partitions would mean 200 state stores per batch.
         .config("spark.sql.shuffle.partitions", _env("SPARK_SHUFFLE_PARTITIONS", "4"))
         .config("spark.sql.session.timeZone", "UTC")
         .config("spark.sql.streaming.metricsEnabled", "true")
+        # A long-running streaming driver otherwise keeps the UI history of every
+        # job, stage and SQL execution in heap (1000 jobs by default) and slowly
+        # starves itself of memory.
+        .config("spark.ui.retainedJobs", "50")
+        .config("spark.ui.retainedStages", "50")
+        .config("spark.ui.retainedTasks", "2000")
+        .config("spark.sql.ui.retainedExecutions", "20")
+        .config("spark.streaming.ui.retainedBatches", "50")
+        .config("spark.sql.streaming.ui.retainedQueries", "10")
+        .config("spark.sql.streaming.ui.retainedProgressUpdates", "50")
+        # The tables are small: rebuilding a Delta snapshot with the default 50
+        # partitions launches dozens of empty tasks on every MERGE.
+        .config("spark.databricks.delta.snapshotPartitions", "2")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel(_env("SPARK_LOG_LEVEL", "WARN"))

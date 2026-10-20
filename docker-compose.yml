@@ -99,7 +99,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
-    mem_limit: 256m
+    # 256 MiB was not enough: at the limit SeaweedFS stalls, and every Delta
+    # write in both Spark jobs waits on it.
+    mem_limit: 512m
     restart: unless-stopped
 
   postgres:
@@ -147,6 +149,7 @@ services:
       POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-60}
       SYNTHETIC_POSTS_PER_MINUTE: ${SYNTHETIC_POSTS_PER_MINUTE:-20}
       REPLAY_PATH: /data/${REPLAY_FILE:-sample_posts.jsonl}
+      REPLAY_SPEEDUP: ${REPLAY_SPEEDUP:-0}
       CAPTURE_PATH: ${CAPTURE_PATH:-}
       REDDIT_CLIENT_ID: ${REDDIT_CLIENT_ID:-}
       REDDIT_CLIENT_SECRET: ${REDDIT_CLIENT_SECRET:-}
@@ -215,7 +218,7 @@ services:
         condition: service_healthy
       spark-job1:
         condition: service_started
-    mem_limit: 1200m
+    mem_limit: 960m  # measured ~700 MiB steady state
     restart: on-failure
 
   dq-scheduler:
