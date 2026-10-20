@@ -1,8 +1,9 @@
 # Reddit Trend Tracker
 
 A real-time streaming pipeline that detects which topics are gaining momentum on
-**r/worldnews** and **r/todayilearned**. Posts are pulled from the Reddit API,
-buffered in Kafka, enriched with KeyBERT topic tags, stored in a Delta Lake
+**r/worldnews** and **r/todayilearned**. Posts come in through a pluggable
+source layer (archived real Reddit data, synthetic, or the live Reddit API),
+are buffered in Kafka, enriched with KeyBERT topic tags, stored in a Delta Lake
 lakehouse, scored over 5-minute windows with Spark Structured Streaming, and
 shown on a live Grafana dashboard.
 
@@ -14,7 +15,7 @@ The whole stack runs locally with one command: `make up`.
 
 ```mermaid
 flowchart LR
-    R[Reddit API<br/>PRAW, every 60s] --> P[Producer<br/>validator: 5 checks]
+    R[Source: archived Reddit replay /<br/>synthetic / live Reddit API] --> P[Producer<br/>validator: 5 checks]
     P -- valid --> K1[(reddit.raw.posts<br/>2 partitions, 7d)]
     P -- invalid --> DLQ[(reddit.dead.letter<br/>1 partition, 30d)]
 
@@ -35,7 +36,7 @@ flowchart LR
 
 | Stage | What happens |
 |---|---|
-| **Producer** | Polls `new` posts every 60 s, hashes usernames, validates them (5 checks), and publishes JSON keyed by `post_id`. Each subreddit gets its own partition. Settings: `acks=all`, `enable.idempotence=true`. |
+| **Producer** | Reads posts from the configured source, hashes usernames, validates them (5 checks), and publishes JSON keyed by `post_id`. Each subreddit gets its own partition. Settings: `acks=all`, `enable.idempotence=true`. |
 | **Kafka** | Runs in KRaft mode (no ZooKeeper). It decouples ingestion from processing and keeps 7 days of posts for replay. |
 | **Spark Job 1** | Runs three streaming queries in one driver. `raw_writer` writes Bronze. `nlp_enrich` cleans the text, deduplicates with a 10-minute event-time watermark, calls the NLP service once per micro-batch and writes Silver. `dlq_sink` mirrors the dead-letter topic into Postgres. |
 | **NLP service** | KeyBERT with `all-MiniLM-L6-v2` on CPU. The model loads once at startup. Keyphrases are normalised (lowercased, plurals folded, a stoplist applied) so that "Floods" and "flood" trend together. |
@@ -88,13 +89,50 @@ Useful commands: `make trends`, `make dq`, `make dlq`, `make logs s=spark-job1`,
 | `PRODUCER_MODE` | Source | Needs |
 |---|---|---|
 | `synthetic` (default) | Generated posts with rotating "breaking" storylines. Every post is labelled (`flair: synthetic`, ids `t3_syn…`) | Nothing |
-| `live` | Real r/worldnews and r/todayilearned via the Reddit API | A Reddit *script* app: set `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`, `REDDIT_USER_AGENT` in `.env` |
-| `replay` | Re-streams `data/$REPLAY_FILE` with event times stamped to now | A JSONL file, e.g. one captured in live mode with `CAPTURE_PATH=/data/capture.jsonl` |
+| `replay` | Re-streams a JSONL file. With `REPLAY_SPEEDUP > 0` the **real gaps between posts are kept**, compressed, so real news bursts stay bursts | A file in `data/`, e.g. from `make real` below |
+| `live` | r/worldnews and r/todayilearned via the Reddit API (PRAW) | Reddit API credentials (see the note below) |
 
-Two real subreddits post a few hundred times a day. In live mode, a topic
-rarely gets two posts inside one 5-minute window, so expect few trends, or
-lower `TREND_THRESHOLD`. Synthetic mode exists so the whole pipeline can be
-demonstrated at a predictable rate.
+### Real Reddit data: replaying an archived day
+
+```bash
+make real SINCE=2026-10-17 UNTIL=2026-10-18     # one real day, played back at 60x (about 23 minutes)
+```
+
+This runs three steps:
+
+1. **`make fetch`** downloads the day's submissions from the
+   [Arctic Shift](https://github.com/ArthurHeitmann/arctic_shift) research
+   archive of public Reddit data. It pages politely through the archive's API
+   (`producer/fetch_archive.py`).
+2. **`make convert`** maps them to the pipeline's 13-field message contract
+   (`producer/convert_dump.py`). It drops NSFW posts, posts removed by
+   moderators, and duplicates. It also reads bulk `.zst` dumps for longer
+   periods, e.g. `make convert IN="data/worldnews_submissions.zst" SINCE=… UNTIL=…`.
+3. **Restarts the producer** in timed replay at `REPLAY_SPEEDUP=60`, so one
+   real hour plays per wall-clock minute. Each 5-minute window on the
+   dashboard covers 5 real hours.
+
+To keep this mode across restarts, set `PRODUCER_MODE=replay`,
+`REPLAY_FILE=real_posts.jsonl`, `REPLAY_SPEEDUP=60` and
+`POLL_INTERVAL_SECONDS=10` in `.env`.
+
+Pick days at least two days old: the archive refreshes `score` and
+`upvote_ratio` about 36 hours after posting. Downloaded and converted files
+stay in `data/` and are gitignored. They are copies of Reddit content and are
+not redistributed with this repo.
+
+**Measured volume:** 17 October 2026 had 239 submissions across both
+subreddits. 162 remained after filtering (76 had been removed by moderators),
+which is about 7 posts an hour. Real trends are therefore sparse, and the
+synthetic mode exists to demonstrate the pipeline under load.
+
+### Why there is no live Reddit by default
+
+Since late 2025, Reddit approves new Data API apps only for moderation use
+cases (see [r/reddit.com/wiki/api](https://www.reddit.com/r/reddit.com/wiki/api/)).
+`live` mode still works if you have credentials: set `REDDIT_CLIENT_ID`,
+`REDDIT_CLIENT_SECRET` and `REDDIT_USER_AGENT` in `.env`. Everything
+downstream of the producer is the same in all three modes.
 
 ## Data quality: 12 checks across 4 layers
 

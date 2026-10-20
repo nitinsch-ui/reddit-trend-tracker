@@ -193,32 +193,72 @@ class SyntheticSource:
 
 
 class ReplaySource:
-    """Streams a JSONL file of messages at a fixed rate, looping when exhausted."""
+    """Streams a JSONL file of messages, looping when exhausted.
 
-    def __init__(self, path: str, posts_per_minute: float = 20):
-        self.lines = [ln for ln in Path(path).read_text(encoding="utf-8").splitlines() if ln.strip()]
-        if not self.lines:
+    speedup == 0  fixed rate: posts_per_minute, event times stamped to now.
+    speedup > 0   real timing: the gaps between posts' original created_utc are
+                  kept, compressed by `speedup` (60 = one real hour per minute),
+                  so real news bursts stay bursts. Event times are re-stamped
+                  onto the wall clock with the same compressed spacing.
+    """
+
+    def __init__(self, path: str, posts_per_minute: float = 20, speedup: float = 0):
+        posts = [json.loads(ln) for ln in Path(path).read_text(encoding="utf-8").splitlines() if ln.strip()]
+        if not posts:
             raise ValueError(f"replay file {path} is empty")
+        if speedup > 0:
+            posts.sort(key=lambda p: p["created_utc"])
+        self.posts = posts
         self.posts_per_minute = posts_per_minute
+        self.speedup = speedup
         self._pos = 0
         self._loop = 0
         self._carry = 0.0
+        self._wall_start: float | None = None
+        self._event_start = posts[0]["created_utc"]
+        # One loop covers the file's span plus one average gap, so loops don't overlap.
+        span = posts[-1]["created_utc"] - posts[0]["created_utc"]
+        self._loop_span = span + (span / max(len(posts) - 1, 1) if span else 60.0)
 
-    def poll(self, elapsed_seconds: float, now: float | None = None) -> list[dict]:
-        now = time.time() if now is None else now
+    def _next(self) -> dict:
+        post = dict(self.posts[self._pos])
+        if self._loop:
+            post["post_id"] = f"{post['post_id']}_r{self._loop}"
+        self._pos += 1
+        if self._pos == len(self.posts):
+            self._pos = 0
+            self._loop += 1
+        return post
+
+    def _poll_fixed_rate(self, elapsed_seconds: float, now: float) -> list[dict]:
         expected = self.posts_per_minute * elapsed_seconds / 60 + self._carry
         count = int(expected)
         self._carry = expected - count
         posts = []
         for _ in range(count):
-            post = json.loads(self.lines[self._pos])
-            if self._loop:
-                post["post_id"] = f"{post['post_id']}_r{self._loop}"
+            post = self._next()
             post["created_utc"] = now
             post["ingested_at"] = now
             posts.append(post)
-            self._pos += 1
-            if self._pos == len(self.lines):
-                self._pos = 0
-                self._loop += 1
         return posts
+
+    def _poll_timed(self, now: float) -> list[dict]:
+        if self._wall_start is None:
+            self._wall_start = now
+        replay_clock = self._event_start + (now - self._wall_start) * self.speedup
+        posts = []
+        while True:
+            original = self.posts[self._pos]["created_utc"] + self._loop * self._loop_span
+            if original > replay_clock:
+                break
+            post = self._next()
+            post["created_utc"] = now - (replay_clock - original) / self.speedup
+            post["ingested_at"] = now
+            posts.append(post)
+        return posts
+
+    def poll(self, elapsed_seconds: float, now: float | None = None) -> list[dict]:
+        now = time.time() if now is None else now
+        if self.speedup > 0:
+            return self._poll_timed(now)
+        return self._poll_fixed_rate(elapsed_seconds, now)

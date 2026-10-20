@@ -2,7 +2,7 @@
 COMPOSE := docker compose
 s ?=
 
-.PHONY: help env up down logs ps tools topics psql trends dq dlq backfill test test-spark lint check reset sample
+.PHONY: help env up down logs ps tools topics psql trends dq dlq backfill test test-spark lint check reset sample convert fetch real
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -64,6 +64,27 @@ check: lint test ## Lint + unit tests
 
 sample: ## Regenerate data/sample_posts.jsonl (synthetic, for PRODUCER_MODE=replay)
 	cd producer && python -c "import json, sources; s = sources.SyntheticSource(['worldnews', 'todayilearned'], posts_per_minute=20, seed=7); [print(json.dumps(p)) for p in s.poll(600, now=1.7e9)]" > ../data/sample_posts.jsonl
+
+fetch: ## Download archived posts from Arctic Shift (SINCE=YYYY-MM-DD UNTIL=YYYY-MM-DD)
+	@test -n "$(SINCE)" -a -n "$(UNTIL)" || (echo 'usage: make fetch SINCE=2026-10-14 UNTIL=2026-10-16' && exit 1)
+	$(COMPOSE) build producer
+	$(COMPOSE) run --rm --no-deps -v "$(CURDIR)/data:/data" producer python fetch_archive.py \
+	  --since $(SINCE) --until $(UNTIL) --out-dir /data
+
+real: ## fetch + convert + restart the producer in timed replay (SINCE= UNTIL= SPEEDUP=60)
+	@test -n "$(SINCE)" -a -n "$(UNTIL)" || (echo 'usage: make real SINCE=2026-10-14 UNTIL=2026-10-16' && exit 1)
+	$(MAKE) fetch SINCE=$(SINCE) UNTIL=$(UNTIL)
+	$(MAKE) convert IN="$(foreach s,worldnews todayilearned,data/$(s)_submissions_$(SINCE)_$(UNTIL).jsonl)"
+	PRODUCER_MODE=replay REPLAY_FILE=real_posts.jsonl REPLAY_SPEEDUP=$(or $(SPEEDUP),60) POLL_INTERVAL_SECONDS=10 \
+	  $(COMPOSE) up -d --no-deps producer
+	@echo "producer now replaying real posts - set the same values in .env to keep them across restarts"
+
+convert: ## Convert archived Reddit dumps in data/ to a replay file (IN="data/a.zst data/b.zst" SINCE= UNTIL=)
+	@test -n "$(IN)" || (echo 'usage: make convert IN="data/worldnews_submissions.zst data/todayilearned_submissions.zst" SINCE=2024-06-01 UNTIL=2024-06-03' && exit 1)
+	$(COMPOSE) build producer
+	$(COMPOSE) run --rm --no-deps -v "$(CURDIR)/data:/data" producer python convert_dump.py \
+	  $(foreach f,$(IN),/data/$(notdir $(f))) --out /data/real_posts.jsonl \
+	  $(if $(SINCE),--since $(SINCE),) $(if $(UNTIL),--until $(UNTIL),) $(EXTRA)
 
 reset: ## Stop the stack and DELETE all data volumes
 	@read -p "This deletes Kafka, lake, Postgres and Grafana data. Continue? [y/N] " ans && [ "$$ans" = y ]

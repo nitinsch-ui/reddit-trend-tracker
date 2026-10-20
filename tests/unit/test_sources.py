@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from sources import ReplaySource, SeenIds, SyntheticSource
 from validator import validate
 
@@ -70,3 +72,28 @@ def test_replay_restamps_and_suffixes_loops(tmp_path):
     posts = src.poll(60, now=NOW)
     assert [p["post_id"] for p in posts] == ["t3_0", "t3_1", "t3_0_r1", "t3_1_r1"]
     assert all(p["created_utc"] == NOW for p in posts)
+
+
+def test_timed_replay_keeps_real_gaps(tmp_path):
+    # Real posts at t=0s, 60s, 120s and a burst of three at 3600s.
+    times = [0, 60, 120, 3600, 3601, 3602]
+    path = tmp_path / "real.jsonl"
+    path.write_text("\n".join(json.dumps({"post_id": f"t3_{i}", "created_utc": 1_717_200_000 + t})
+                              for i, t in enumerate(times)))
+    src = ReplaySource(str(path), speedup=60)  # one real hour per wall minute
+    assert [p["post_id"] for p in src.poll(0, now=NOW)] == ["t3_0"]
+    second = src.poll(1, now=NOW + 1)  # replay clock at +60s real
+    assert [p["post_id"] for p in second] == ["t3_1"]
+    assert second[0]["created_utc"] == pytest.approx(NOW + 1)
+    burst = src.poll(59, now=NOW + 60)  # replay clock at +3600s real
+    assert [p["post_id"] for p in burst] == ["t3_2", "t3_3"]
+    assert burst[0]["created_utc"] == pytest.approx(NOW + 2)  # 120s real -> 2s wall
+    assert [p["post_id"] for p in src.poll(1, now=NOW + 61)] == ["t3_4", "t3_5"]
+
+
+def test_timed_replay_loops_without_overlap(tmp_path):
+    path = tmp_path / "real.jsonl"
+    path.write_text("\n".join(json.dumps({"post_id": f"t3_{i}", "created_utc": 1000.0 + i * 60}) for i in range(3)))
+    src = ReplaySource(str(path), speedup=60)
+    ids = [p["post_id"] for t in range(0, 7) for p in src.poll(1, now=NOW + t)]
+    assert ids == ["t3_0", "t3_1", "t3_2", "t3_0_r1", "t3_1_r1", "t3_2_r1", "t3_0_r2"]

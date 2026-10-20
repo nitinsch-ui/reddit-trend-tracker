@@ -9,6 +9,9 @@ spark-warehouse/
 metastore_db/
 derby.log
 data/capture*.jsonl
+data/real_*.jsonl
+data/*.zst
+data/*_submissions*
 .DS_Store
 .idea/
 .vscode/

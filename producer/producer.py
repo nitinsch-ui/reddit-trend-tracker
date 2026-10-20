@@ -31,6 +31,7 @@ class Config:
     dlq_topic: str = "reddit.dead.letter"
     posts_per_minute: float = 20.0
     replay_path: str = "/data/sample_posts.jsonl"
+    replay_speedup: float = 0.0
     capture_path: str = ""
     pg_dsn: str = ""
     reddit_client_id: str = ""
@@ -54,6 +55,7 @@ class Config:
             dlq_topic=e("KAFKA_DLQ_TOPIC", "reddit.dead.letter"),
             posts_per_minute=float(e("SYNTHETIC_POSTS_PER_MINUTE", "20")),
             replay_path=e("REPLAY_PATH", "/data/sample_posts.jsonl"),
+            replay_speedup=float(e("REPLAY_SPEEDUP", "0") or 0),
             capture_path=e("CAPTURE_PATH", ""),
             pg_dsn=pg_dsn,
             reddit_client_id=e("REDDIT_CLIENT_ID", ""),
@@ -70,7 +72,7 @@ def build_source(cfg: Config):
             sys.exit("PRODUCER_MODE=live needs REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET in .env")
         return LiveSource(cfg.reddit_client_id, cfg.reddit_client_secret, cfg.reddit_user_agent, cfg.subreddits)
     if cfg.mode == "replay":
-        return ReplaySource(cfg.replay_path, cfg.posts_per_minute)
+        return ReplaySource(cfg.replay_path, cfg.posts_per_minute, cfg.replay_speedup)
     if cfg.mode == "synthetic":
         return SyntheticSource(cfg.subreddits, cfg.posts_per_minute)
     sys.exit(f"unknown PRODUCER_MODE {cfg.mode!r}; use live, synthetic or replay")
