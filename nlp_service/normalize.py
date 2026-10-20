@@ -43,6 +43,17 @@ def normalize_topic(phrase: str) -> str | None:
     return topic if len(topic) >= 3 else None
 
 
+def _overlaps(topic: str, chosen: list[str]) -> bool:
+    """True if a single word is part of a phrase already chosen for this post.
+
+    Without this, a post about "medieval library" also counts towards "library",
+    and both trend from the same posts.
+    """
+    if " " in topic:
+        return False
+    return any(topic in other.split(" ") for other in chosen)
+
+
 def normalize_keywords(pairs, top_n: int = 5, min_score: float = 0.15) -> tuple[list[str], list[float]]:
     """(phrase, score) pairs from KeyBERT -> parallel topic/score lists, deduplicated.
 
@@ -55,7 +66,7 @@ def normalize_keywords(pairs, top_n: int = 5, min_score: float = 0.15) -> tuple[
         if score < min_score:
             continue
         topic = normalize_topic(phrase)
-        if topic is None or topic in topics:
+        if topic is None or topic in topics or _overlaps(topic, topics):
             continue
         topics.append(topic)
         scores.append(round(float(score), 4))

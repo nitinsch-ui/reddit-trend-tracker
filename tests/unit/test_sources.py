@@ -23,6 +23,23 @@ def test_synthetic_rate_and_validity():
     assert len({p["post_id"] for p in posts}) == len(posts)
 
 
+def test_no_filler_bigram_dominates_synthetic_titles():
+    """Only storylines should repeat often enough to trend, never template text."""
+    from collections import Counter
+
+    from sources import STORYLINES
+
+    src = SyntheticSource(["worldnews", "todayilearned"], posts_per_minute=600, hot_share=0.0, seed=2)
+    posts = src.poll(60, now=NOW)
+    storyline_words = {w for lines in STORYLINES.values() for s in lines for w in s.split()}
+    bigrams = Counter()
+    for p in posts:
+        words = [w.strip(":,").lower() for w in p["title"].split()]
+        bigrams.update({" ".join(b) for b in zip(words, words[1:]) if not set(b) & storyline_words})
+    top_share = bigrams.most_common(1)[0][1] / len(posts)
+    assert top_share < 0.12, bigrams.most_common(3)
+
+
 def test_synthetic_rate_carries_fractions():
     src = SyntheticSource(["worldnews"], posts_per_minute=1, seed=1)
     counts = [len(src.poll(30, now=NOW + i * 30)) for i in range(4)]

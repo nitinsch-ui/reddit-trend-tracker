@@ -98,20 +98,36 @@ TIL_STORYLINES = [
 CONTROVERSIAL = {"election recount", "central bank interest rates"}
 PLACES = ["Kerala", "Jakarta", "Lagos", "Lima", "Manila", "Nairobi", "Hanoi", "Dhaka", "Quito", "Accra"]
 
+# Many short templates, so no filler phrase recurs often enough to "trend" by
+# itself: only the storyline should be shared across posts.
 TEMPLATES = {
     "worldnews": [
-        "{s} prompts emergency response in {place}",
-        "Officials warn {s} could worsen this week",
-        "{s}: thousands affected as crisis deepens in {place}",
-        "UN calls for urgent action on {s}",
-        "Live updates on {s} as {place} braces for impact",
-        "Analysts say {s} will shape the coming months",
+        "{s} hits {place}",
+        "{place} responds to {s}",
+        "Officials in {place} warn about {s}",
+        "{s}: what we know so far",
+        "UN statement on {s}",
+        "{s} in {place} leaves thousands stranded",
+        "Opinion: {s} was predictable",
+        "{place} government faces questions over {s}",
+        "Experts explain {s}",
+        "{s} latest from {place}",
+        "Markets react to {s}",
+        "Aid groups mobilise after {s}",
+        "{s} disrupts travel across {place}",
+        "Satellite images show {s}",
     ],
     "todayilearned": [
-        "TIL that {s} were first documented centuries ago",
-        "TIL about the surprising history of {s}",
-        "TIL scientists are still debating {s}",
-        "TIL {s} played a role in shaping {place}",
+        "TIL about {s}",
+        "TIL {s} are older than most people think",
+        "TIL the science behind {s}",
+        "TIL {s} were once common in {place}",
+        "TIL a museum in {place} is dedicated to {s}",
+        "TIL {s} inspired a famous novel",
+        "TIL why {s} matter to biologists",
+        "TIL there is a festival celebrating {s}",
+        "TIL {s} nearly vanished in the 1800s",
+        "TIL engineers still study {s}",
     ],
 }
 STORYLINES = {"worldnews": WORLDNEWS_STORYLINES, "todayilearned": TIL_STORYLINES}
